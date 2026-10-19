@@ -55,7 +55,8 @@ pub(crate) fn install(client: &Arc<Inner>) {
         jfn_input::web_became_live();
     })));
 
-    client.set_message_handler(Some(Box::new(handle_message)));
+    let app = Arc::clone(&client.app);
+    client.set_message_handler(Some(Box::new(move |message| handle_message(&app, message))));
 }
 
 fn parse_metadata_json(json: &str) -> MediaMetadata {
@@ -208,11 +209,11 @@ fn with_args(args: Option<&ListValue>, f: impl FnOnce(&ListValue)) -> bool {
     true
 }
 
-fn handle_message(message: BrowserMessage) -> bool {
+fn handle_message(app: &jfn_platform_abi::App, message: BrowserMessage) -> bool {
     let args = message.args();
 
     if message.name() == "openClientSettings" {
-        jfn_platform_abi::request_client_settings();
+        app.open_client_settings();
         return true;
     }
 

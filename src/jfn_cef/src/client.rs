@@ -244,6 +244,7 @@ pub(crate) struct Inner {
     // app-level callback slots, stored as boxed closures.
     message_handler: Mutex<Option<Box<MessageFn>>>,
     created_callback: Mutex<Option<Arc<CreatedFn>>>,
+    pub(crate) app: Arc<jfn_platform_abi::App>,
     pub(crate) channel: crate::receiver::Channel,
     pub(crate) menu: Mutex<Menu>,
 }
@@ -405,6 +406,7 @@ impl Inner {
             deferred_navigation,
             message_handler: Mutex::new(None),
             created_callback: Mutex::new(None),
+            app: Arc::clone(&app),
             channel: crate::receiver::Channel::new(weak.clone()),
             menu: Mutex::new(Menu { showing: None, app }),
         })

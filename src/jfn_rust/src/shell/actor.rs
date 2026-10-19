@@ -79,6 +79,8 @@ impl From<AppMsg> for Work {
             AppMsg::OpenContextMenu(serial, builder) => Work::OpenContextMenu(serial, builder),
             AppMsg::OpenDropdown(serial, builder) => Work::OpenDropdown(serial, builder),
             AppMsg::CloseMenu(serial) => Work::CloseMenu(serial),
+            AppMsg::OpenClientSettings => Work::OpenClientSettings,
+            AppMsg::OpenAbout => Work::OpenAbout,
         }
     }
 }

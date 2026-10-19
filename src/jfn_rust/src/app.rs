@@ -612,9 +612,10 @@ impl StartupResources<PreparedNative> {
 impl StartupResources<MpvNative> {
     fn initialize(
         mut self,
+        app: Arc<App>,
     ) -> Result<StartupResources<InitializedNative>, jfn_platform_abi::PlatformInitError> {
         let MpvNative { prepared, mpv } = self.native.take();
-        match prepared.initialize(mpv.raw().cast()) {
+        match prepared.initialize(mpv.raw().cast(), app) {
             Ok(platform) => Ok(StartupResources {
                 services: self.services,
                 native: NativeOwner(Some(InitializedNative { platform, mpv })),
@@ -1048,10 +1049,15 @@ fn run_app(
 
     let boot = BackgroundCapture::Pending;
 
+    let menu = Arc::new(crate::app_menu::MenuManager::new());
+    let app = Arc::new(App::new(crate::shell::shell_sender(), {
+        let menu = Arc::clone(&menu);
+        move || menu.next_serial()
+    }));
     // Platform init precedes both the shell overlay and `CefInitialize`: the
     // overlay's surface needs the backend's compositor devices, and the
     // connect screen must be on screen while CEF is still starting.
-    let mut resources = match resources.initialize() {
+    let mut resources = match resources.initialize(Arc::clone(&app)) {
         Ok(resources) => resources,
         Err(error) => {
             tracing::error!(target: "Main", "{error}");
@@ -1060,13 +1066,6 @@ fn run_app(
     };
     let platform = &resources.native.get().platform;
     tracing::info!(target: "Main", "Platform init ok");
-    jfn_platform_abi::set_about_handler(crate::shell::shell_open_about);
-    jfn_platform_abi::set_client_settings_handler(crate::shell::shell_open_client_settings);
-    let menu = Arc::new(crate::app_menu::MenuManager::new());
-    let app = Arc::new(App::new(crate::shell::shell_sender(), {
-        let menu = Arc::clone(&menu);
-        move || menu.next_serial()
-    }));
     let shell_readiness =
         match crate::shell::shell_start(platform, metadata, Arc::clone(&app), menu) {
             Ok((shell, readiness)) => {

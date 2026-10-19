@@ -14,6 +14,8 @@ pub enum AppMsg {
     OpenContextMenu(MenuSerial, MenuBuilder),
     OpenDropdown(MenuSerial, MenuBuilder),
     CloseMenu(MenuSerial),
+    OpenClientSettings,
+    OpenAbout,
 }
 
 pub struct App {
@@ -53,5 +55,13 @@ impl App {
 
     pub fn close_menu(&self, serial: MenuSerial) {
         (self.channel)(AppMsg::CloseMenu(serial));
+    }
+
+    pub fn open_client_settings(&self) {
+        (self.channel)(AppMsg::OpenClientSettings);
+    }
+
+    pub fn open_about(&self) {
+        (self.channel)(AppMsg::OpenAbout);
     }
 }

@@ -358,18 +358,6 @@ fn signal_fonts_ready(result: Result<(), FontWarmupError>) {
     ready.notify_all();
 }
 
-/// Opens the combined overlay on its About tab. Installed as
-/// [`jfn_platform_abi::set_about_handler`].
-pub fn shell_open_about() {
-    post(Work::OpenAbout);
-}
-
-/// Opens client settings. Work posted before the render thread starts remains
-/// queued in the process-wide shell channel.
-pub fn shell_open_client_settings() {
-    post(Work::OpenClientSettings);
-}
-
 const FONT: &[u8] = include_bytes!("assets/NotoSans-Regular.ttf");
 
 /// Posts `work` to the render actor. Never drops it: an actor that has not
