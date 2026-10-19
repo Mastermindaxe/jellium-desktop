@@ -4,6 +4,7 @@
 use std::ffi::{CStr, CString, c_char, c_int};
 use std::path::{Path, PathBuf};
 use std::ptr;
+use std::sync::Arc;
 use std::thread::JoinHandle;
 
 use crate::shell::metadata::ApplicationMetadata;
@@ -13,7 +14,7 @@ use jfn_cef::{APP_VERSION_FULL, BrowserCef, InitializedCef, LoadedCef, ProcessDi
 use jfn_instance_ipc::jfn::{Request, Response};
 use jfn_instance_ipc::{Listener, Start, Stream};
 use jfn_logging::{Category, Level};
-use jfn_platform_abi::{IdleInhibitLevel, Instance, Platform, WindowGeometry};
+use jfn_platform_abi::{App, IdleInhibitLevel, Instance, Platform, WindowGeometry};
 
 use crate::cli;
 
@@ -804,6 +805,7 @@ fn start_web_overlay(
     rate: Option<jfn_gpu_paint::RefreshRate>,
     cef: &CefInit,
     user_video_bg: u32,
+    app: Arc<App>,
 ) -> Result<StartedOverlay, OverlayStartupError> {
     // Must run before the browser is created: the pre-loaded page fires its
     // initial theme-color IPC at DOMContentLoaded.
@@ -831,7 +833,7 @@ fn start_web_overlay(
             }),
             frame_rate: rate,
             shared_textures: cef.shared_textures,
-            application_menu: crate::app_menu::cef_menu(),
+            app,
         },
     )?;
     crate::shell::post(crate::shell::actor::Work::WebAttached(overlay.clone()));
@@ -1060,8 +1062,13 @@ fn run_app(
     tracing::info!(target: "Main", "Platform init ok");
     jfn_platform_abi::set_about_handler(crate::shell::shell_open_about);
     jfn_platform_abi::set_client_settings_handler(crate::shell::shell_open_client_settings);
+    let menu = Arc::new(crate::app_menu::MenuManager::new());
+    let app = Arc::new(App::new(crate::shell::shell_sender(), {
+        let menu = Arc::clone(&menu);
+        move || menu.next_serial()
+    }));
     let shell_readiness =
-        match crate::shell::shell_start(platform, metadata, crate::app_menu::shell_actions()) {
+        match crate::shell::shell_start(platform, metadata, Arc::clone(&app), menu) {
             Ok((shell, readiness)) => {
                 resources.services.shell = Some(shell);
                 Some(readiness)
@@ -1116,7 +1123,7 @@ fn run_app(
         }
     }
     log_mpv_versions();
-    run_with_cef(boot, deferred, resources, &opts, instance)
+    run_with_cef(boot, deferred, resources, &opts, instance, app)
 }
 
 // =====================================================================
@@ -1268,6 +1275,7 @@ fn run_with_cef(
     mut resources: StartupResources<InitializedNative>,
     opts: &StartupOptions,
     instance: &Instance,
+    app: Arc<App>,
 ) -> c_int {
     let mpv_raw = resources.native.get().mpv.raw();
     if jfn_config::titlebar_theme_color() {
@@ -1293,7 +1301,7 @@ fn run_with_cef(
     let StartedOverlay {
         manager_thread,
         overlay,
-    } = match start_web_overlay(rate, cef, boot.user_video_bg) {
+    } = match start_web_overlay(rate, cef, boot.user_video_bg, app) {
         Ok(started) => started,
         Err(error) => {
             tracing::error!(target: "Main", "overlay startup: {error}");

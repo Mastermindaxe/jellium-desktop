@@ -29,18 +29,13 @@ pub mod spinner;
 pub mod state;
 pub mod theme;
 
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 
 use parking_lot::{Condvar, Mutex};
 
+use crate::app_menu::MenuManager;
 use actor::{Actor, Channel, Work};
-use jfn_platform_abi::{Plane, SurfaceHandle, SurfaceSize, Visibility};
-
-/// Application policy injected by the process composition root.
-#[derive(Clone, Copy)]
-pub struct ApplicationActions {
-    pub open_menu: fn(jfn_platform_abi::LogicalPoint, bool),
-}
+use jfn_platform_abi::{App, Plane, SurfaceHandle, SurfaceSize, Visibility};
 
 /// Owns its surface and actor. Drop requests a bounded stop. Unconfirmed
 /// termination pins the platform lease instead of allowing native destruction.
@@ -140,10 +135,11 @@ pub(crate) fn publish_no_overlay() {
 /// The returned readiness receiver reports renderer startup independently of
 /// surface and thread acquisition. The application chooses its failure policy.
 /// Must run after `Platform::init` and before `CefInitialize`.
-pub fn shell_start(
+pub(crate) fn shell_start(
     platform: &jfn_platform_abi::PlatformRuntime,
     metadata: metadata::ApplicationMetadata,
-    actions: ApplicationActions,
+    app: Arc<App>,
+    menu: Arc<MenuManager>,
 ) -> Result<(Shell, Readiness), StartError> {
     static CLAIMED: OnceLock<()> = OnceLock::new();
     CLAIMED
@@ -179,7 +175,8 @@ pub fn shell_start(
         surface,
         CHANNEL.get_or_init(Channel::new),
         metadata,
-        actions,
+        app,
+        menu,
         platform.lease(),
         ready_tx,
     )?);
@@ -381,6 +378,10 @@ pub(crate) fn post(work: Work) {
     if !CLOSED.load(std::sync::atomic::Ordering::Acquire) {
         CHANNEL.get_or_init(Channel::new).post(work);
     }
+}
+
+pub fn shell_sender() -> std::sync::mpsc::Sender<Work> {
+    CHANNEL.get_or_init(Channel::new).sender()
 }
 
 /// Subscribed into the refresh report at [`shell_start`]; wakes the pass, which

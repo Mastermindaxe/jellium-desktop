@@ -1,7 +1,6 @@
 //! Browser state.
 //!
 //! Holds the browser handle the web overlay drives, the size it last applied
-//! to it, its menu-session slot, the resize-debounce and the CEF browser ops
 //! dispatch that schedules `WasResized`, `NotifyScreenInfoChanged`,
 //! `Invalidate`, `SetWindowlessFrameRate`, `SendExternalBeginFrame`, and
 //! `ExecuteJavaScript` calls on TID_UI.
@@ -9,18 +8,24 @@
 //! Lifetime model: `Arc<Inner>`, so posted CEF tasks keep a clone alive past
 //! the overlay's own drop.
 
-use cef::{Browser, RunContextMenuCallback};
+use cef::{
+    Browser, EventFlags, ImplMenuModel, ImplRunContextMenuCallback, MenuModel,
+    RunContextMenuCallback, sys,
+};
 use crossbeam_channel::{Receiver, Sender};
 use crossbeam_utils::atomic::AtomicCell;
 use parking_lot::Mutex;
 use std::convert::Infallible;
-use std::os::raw::{c_int, c_void};
+use std::os::raw::c_int;
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicI64};
 use std::sync::{Arc, OnceLock};
 use std::time::Instant;
 
 use crate::ipc::BrowserMessage;
-use crate::menu_ownership::{MenuOwnership, Session};
+use jfn_platform_abi::{ChannelValue, Item, LogicalPoint, MenuBuilder, MenuSerial};
+
+use crate::cef_string::userfree_to_string;
+use crate::receiver::CefMsg;
 use crate::web_overlay::WebOverlaySurface;
 
 use crate::frame_rate::FrameRate;
@@ -204,10 +209,6 @@ pub(crate) struct Inner {
     // All CEF host/frame ops on TID_UI route through this; dropped on
     // OnBeforeClose.
     browser: Mutex<BrowserState>,
-    // Pending RunContextMenuCallback — held while a context menu is open.
-    pending_menu_callback: Mutex<Option<RunContextMenuCallback>>,
-    // The one context-menu session slot for this browser.
-    menu: Mutex<MenuOwnership>,
     // The surface owner is shared through CEF's client ownership; its opaque
     // handle is never copied into this client.
     surface: Arc<WebOverlaySurface>,
@@ -243,17 +244,88 @@ pub(crate) struct Inner {
     // app-level callback slots, stored as boxed closures.
     message_handler: Mutex<Option<Box<MessageFn>>>,
     created_callback: Mutex<Option<Arc<CreatedFn>>>,
-    context_menu_builder: Mutex<Option<Box<ContextBuilderFn>>>,
-    context_menu_dispatcher: Mutex<Option<Box<ContextDispatcherFn>>>,
+    pub(crate) channel: crate::receiver::Channel,
+    pub(crate) menu: Mutex<Menu>,
 }
 
-// Typed closure signatures stored in each callback slot. `*mut c_void` args
-// stay raw because callers may want to receive cef-rs handles or C++
-// CefRefPtr objects depending on which side installed the handler.
+const STRIP_ACCEL_KEEP: u8 = b'&';
+
+fn strip_accelerator(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for b in s.bytes() {
+        if b != STRIP_ACCEL_KEEP {
+            out.push(b as char);
+        }
+    }
+    if s.is_ascii() {
+        return out;
+    }
+    s.chars().filter(|c| *c != '&').collect()
+}
+
+pub(crate) struct Menu {
+    showing: Option<MenuSerial>,
+    app: Arc<jfn_platform_abi::App>,
+}
+
+impl Menu {
+    pub(crate) fn open_context_menu(
+        &mut self,
+        callback: RunContextMenuCallback,
+        model: &MenuModel,
+        anchor: LogicalPoint,
+        sender: std::sync::mpsc::Sender<CefMsg>,
+    ) {
+        let mut builder = self.app.new_menu(anchor);
+        let serial = builder.serial();
+        let mut run = Vec::new();
+        for i in 0..model.count() {
+            let t: sys::cef_menu_item_type_t = model.type_at(i).into();
+            if t == sys::cef_menu_item_type_t::MENUITEMTYPE_SEPARATOR {
+                builder = builder.add_items(std::mem::take(&mut run));
+                continue;
+            }
+            let cb = callback.clone();
+            let command_id = model.command_id_at(i);
+            run.push(Item {
+                label: strip_accelerator(&userfree_to_string(&model.label_at(i))),
+                enabled: model.is_enabled_at(i) != 0,
+                value: ChannelValue::new(
+                    sender.clone(),
+                    CefMsg::Menu {
+                        serial,
+                        callback: Box::new(move || cb.cont(command_id, EventFlags::default())),
+                    },
+                ),
+            });
+        }
+        let builder = builder.add_items(run).add_on_closed(ChannelValue::new(
+            sender,
+            CefMsg::Menu {
+                serial,
+                callback: Box::new(move || callback.cancel()),
+            },
+        ));
+        self.showing = Some(serial);
+        self.app.open_context_menu(builder);
+    }
+
+    pub(crate) fn open_dropdown(&mut self, builder: MenuBuilder) {
+        self.showing = Some(builder.serial());
+        self.app.open_dropdown(builder);
+    }
+
+    pub(crate) fn finish(&mut self, message: CefMsg) {
+        let CefMsg::Menu { serial, callback } = message;
+        if self.showing == Some(serial) {
+            self.showing = None;
+            callback();
+        }
+    }
+}
+
 pub(crate) type MessageFn = dyn Fn(BrowserMessage) -> bool + Send + Sync;
 pub type CreatedFn = dyn Fn() + Send + Sync;
-pub type ContextBuilderFn = dyn Fn(*mut c_void) + Send + Sync;
-pub type ContextDispatcherFn = dyn Fn(c_int) -> bool + Send + Sync;
 
 #[derive(Default)]
 struct PopupState {
@@ -263,7 +335,7 @@ struct PopupState {
     h: i32,
     visible: bool,
     options: Vec<String>,
-    selected_idx: i32,
+    selected_idx: Option<usize>,
     // Option indices an arrow key can land on (disabled/optgroup-disabled
     // excluded). Used to drive CEF's own popup to the chosen row.
     selectable: Vec<i32>,
@@ -274,7 +346,6 @@ struct PopupState {
 }
 
 // SAFETY: `Inner` is not auto-Send/Sync only because of the CEF ref-counted
-// handles it stores (`Browser`, `RunContextMenuCallback`); those live behind
 // `Inner`'s own mutexes and CEF ref-counts them atomically.
 unsafe impl Send for Inner {}
 unsafe impl Sync for Inner {}
@@ -307,10 +378,11 @@ impl Inner {
         deferred_navigation: Arc<DeferredNavigation>,
         paint_mode: PaintMode,
         frame_rate: Option<FrameRate>,
+        app: Arc<jfn_platform_abi::App>,
     ) -> Arc<Self> {
         let paint_scheduler = paint_mode.make_scheduler();
         let (owner_connected, owner_disconnected) = crossbeam_channel::unbounded();
-        Arc::new(Self {
+        Arc::new_cyclic(|weak| Self {
             session,
             name: Mutex::new(String::new()),
             _owner_connected: owner_connected,
@@ -320,8 +392,6 @@ impl Inner {
                 browser: None,
                 applied: None,
             }),
-            pending_menu_callback: Mutex::new(None),
-            menu: Mutex::new(MenuOwnership::default()),
             surface,
             width: AtomicI32::new(0),
             height: AtomicI32::new(0),
@@ -331,15 +401,12 @@ impl Inner {
             frame_rate: AtomicCell::new(frame_rate),
             resize_scheduled: AtomicBool::new(false),
             last_was_resized_ns: AtomicI64::new(0),
-            popup: Mutex::new(PopupState {
-                selected_idx: -1,
-                ..PopupState::default()
-            }),
+            popup: Mutex::new(PopupState::default()),
             deferred_navigation,
             message_handler: Mutex::new(None),
             created_callback: Mutex::new(None),
-            context_menu_builder: Mutex::new(None),
-            context_menu_dispatcher: Mutex::new(None),
+            channel: crate::receiver::Channel::new(weak.clone()),
+            menu: Mutex::new(Menu { showing: None, app }),
         })
     }
 
@@ -385,29 +452,11 @@ impl Inner {
         self.resize(size);
     }
 
-    pub(crate) fn menu_open(&self) -> Option<Session> {
-        self.menu.lock().open()
-    }
-
-    pub(crate) fn menu_resolve(&self, session: Session) -> bool {
-        self.menu.lock().resolve(session)
-    }
-
-    pub(crate) fn menu_reset(&self) {
-        self.menu.lock().reset();
-    }
-
     pub(crate) fn set_message_handler(&self, f: Option<Box<MessageFn>>) {
         *self.message_handler.lock() = f;
     }
     pub(crate) fn set_created_callback(&self, f: Option<Arc<CreatedFn>>) {
         *self.created_callback.lock() = f;
-    }
-    pub(crate) fn set_context_menu_builder(&self, f: Option<Box<ContextBuilderFn>>) {
-        *self.context_menu_builder.lock() = f;
-    }
-    pub(crate) fn set_context_menu_dispatcher(&self, f: Option<Box<ContextDispatcherFn>>) {
-        *self.context_menu_dispatcher.lock() = f;
     }
 }
 

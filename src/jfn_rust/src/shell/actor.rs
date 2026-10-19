@@ -15,13 +15,15 @@ use iced_core::{Element, Event, Point, Size, clipboard, renderer, shell, window}
 use iced_runtime::user_interface::{self, UserInterface};
 use jfn_gpu_paint::{Acquired, Presented};
 use jfn_platform_abi::{
-    FrameSource, LogicalPoint, LogicalSize, SurfaceHandle, Visibility, WindowExtent,
+    App, AppMsg, ChannelValue, FrameSource, LogicalPoint, LogicalSize, MenuBuilder, MenuSerial,
+    SurfaceHandle, Visibility, WindowExtent,
 };
 
 use crate::shell::controls::{self, Direction};
 use crate::shell::field::Act;
 use crate::shell::fields::{Apply, Fields};
 
+use crate::app_menu::MenuManager;
 use crate::shell::chrome::Titlebar;
 use crate::shell::modal::{Identity, Stack, Transition};
 use crate::shell::paint::Painter;
@@ -63,7 +65,22 @@ pub enum Work {
     /// CEF is initialized; pending connection operations can now be submitted.
     WebAttached(jfn_cef::WebOverlay),
     WebEvent(jfn_cef::WebEvent),
+    OpenContextMenu(MenuSerial, MenuBuilder),
+    OpenDropdown(MenuSerial, MenuBuilder),
+    CloseMenu(MenuSerial),
+    ToggleFullscreen,
+    Exit,
     Shutdown,
+}
+
+impl From<AppMsg> for Work {
+    fn from(msg: AppMsg) -> Work {
+        match msg {
+            AppMsg::OpenContextMenu(serial, builder) => Work::OpenContextMenu(serial, builder),
+            AppMsg::OpenDropdown(serial, builder) => Work::OpenDropdown(serial, builder),
+            AppMsg::CloseMenu(serial) => Work::CloseMenu(serial),
+        }
+    }
 }
 
 /// Which field an edit acts on.
@@ -154,7 +171,7 @@ impl Channel {
         drop(self.tx.send(work));
     }
 
-    fn sender(&self) -> Sender<Work> {
+    pub(super) fn sender(&self) -> Sender<Work> {
         self.tx.clone()
     }
 
@@ -194,11 +211,12 @@ impl Actor {
     ///
     /// The thread calls [`crate::shell::wait_fonts_ready`] before its first draw and
     /// never again.
-    pub fn spawn(
+    pub(crate) fn spawn(
         surface: SurfaceHandle,
         channel: &Channel,
         metadata: crate::shell::metadata::ApplicationMetadata,
-        actions: crate::shell::ApplicationActions,
+        app: Arc<App>,
+        menu: Arc<MenuManager>,
         platform: jfn_platform_abi::PlatformLease,
         on_ready: std::sync::mpsc::SyncSender<Result<(), LoopStartError>>,
     ) -> Result<Actor, crate::shell::StartError> {
@@ -211,7 +229,7 @@ impl Actor {
             .name("jfn-shell".to_owned())
             .spawn(move || {
                 let _platform = platform;
-                run(surface, &rx, &wake_tx, metadata, actions, on_ready);
+                run(surface, &rx, &wake_tx, metadata, app, menu, on_ready);
             })?;
         Ok(Actor { tx, thread })
     }
@@ -511,7 +529,8 @@ struct Updated {
 
 /// The render loop's state between passes.
 struct Loop {
-    actions: crate::shell::ApplicationActions,
+    app: Arc<App>,
+    menu: Arc<MenuManager>,
     surface: SurfaceHandle,
     wake_tx: Sender<Work>,
     painter: Painter,
@@ -544,7 +563,8 @@ fn run(
     rx: &Receiver<Work>,
     wake_tx: &Sender<Work>,
     metadata: crate::shell::metadata::ApplicationMetadata,
-    actions: crate::shell::ApplicationActions,
+    app: Arc<App>,
+    menu: Arc<MenuManager>,
     on_ready: std::sync::mpsc::SyncSender<Result<(), LoopStartError>>,
 ) {
     let mut pending = Vec::new();
@@ -553,7 +573,7 @@ fn run(
         drop(on_ready.send(Err(LoopStartError::NoTarget)));
         return;
     };
-    let mut state = match Loop::start(surface, wake_tx, target, metadata, actions) {
+    let mut state = match Loop::start(surface, wake_tx, target, metadata, app, menu) {
         Ok(state) => state,
         Err(error) => {
             drop(on_ready.send(Err(error)));
@@ -586,7 +606,8 @@ impl Loop {
         wake_tx: &Sender<Work>,
         target: jfn_gpu_paint::WindowTarget,
         metadata: crate::shell::metadata::ApplicationMetadata,
-        actions: crate::shell::ApplicationActions,
+        app: Arc<App>,
+        menu: Arc<MenuManager>,
     ) -> Result<Loop, LoopStartError> {
         let gpu = jfn_gpu_paint::surfaces().ok_or(LoopStartError::NoGpu)?;
         let extent = initial_extent().ok_or(LoopStartError::NoExtent)?;
@@ -617,7 +638,8 @@ impl Loop {
         publish(&model, extent);
         apply_visibility(surface, &model);
         Ok(Loop {
-            actions,
+            app,
+            menu,
             surface,
             wake_tx: wake_tx.clone(),
             painter,
@@ -768,6 +790,45 @@ impl Loop {
                 }
                 connection.flush_requests();
             }
+            Work::OpenContextMenu(serial, builder) => {
+                let restricted = self.model.stack.identity() == Some(Identity::SettingsOverlay);
+                let mut items = vec![jfn_platform_abi::Item {
+                    label: "Toggle Fullscreen".to_owned(),
+                    enabled: true,
+                    value: ChannelValue::new(self.wake_tx.clone(), Work::ToggleFullscreen),
+                }];
+                if !restricted {
+                    items.push(jfn_platform_abi::Item {
+                        label: "Settings".to_owned(),
+                        enabled: true,
+                        value: ChannelValue::new(self.wake_tx.clone(), Work::OpenClientSettings),
+                    });
+                }
+                items.push(jfn_platform_abi::Item {
+                    label: "Exit".to_owned(),
+                    enabled: true,
+                    value: ChannelValue::new(self.wake_tx.clone(), Work::Exit),
+                });
+                let builder = builder.add_items(items).add_on_closed(ChannelValue::new(
+                    self.wake_tx.clone(),
+                    Work::CloseMenu(serial),
+                ));
+                self.menu.open(serial, builder);
+            }
+            Work::OpenDropdown(serial, builder) => self.menu.open(
+                serial,
+                builder.add_on_closed(ChannelValue::new(
+                    self.wake_tx.clone(),
+                    Work::CloseMenu(serial),
+                )),
+            ),
+            Work::CloseMenu(serial) => self.menu.close(serial),
+            Work::ToggleFullscreen => {
+                if let Some(platform) = jfn_platform_abi::try_lease() {
+                    platform.toggle_fullscreen();
+                }
+            }
+            Work::Exit => jfn_playback::shutdown::jfn_shutdown_initiate(),
             Work::Shutdown => return Flow::Stop,
         }
         Flow::Continue
@@ -813,11 +874,10 @@ impl Loop {
         resolve_deferred(
             &mut ui,
             painter,
-            model,
             &mut this.deferred,
             &mut this.queued,
             &this.wake_tx,
-            this.actions,
+            &this.app,
         );
         let retained_settings = retained_settings(&mut ui, painter, model);
 
@@ -906,24 +966,17 @@ impl Loop {
 fn resolve_deferred(
     ui: &mut Ui<'_>,
     painter: &mut Painter,
-    model: &Model,
     deferred: &mut Vec<Deferred>,
     queued: &mut Vec<Apply>,
     wake_tx: &Sender<Work>,
-    actions: crate::shell::ApplicationActions,
+    app: &App,
 ) {
     let fields = Fields::collect(ui, painter.renderer());
     let mut menu_anchor = None;
     for request in deferred.drain(..) {
         match request {
             Deferred::ContextMenu(p) => {
-                menu_anchor = menu_anchor.or(raise_menu(
-                    &fields,
-                    p,
-                    queued,
-                    model.stack.identity() == Some(Identity::SettingsOverlay),
-                    actions,
-                ));
+                menu_anchor = menu_anchor.or(raise_menu(&fields, p, queued, app));
             }
             Deferred::EditMenuAtCaret => {
                 menu_anchor = menu_anchor.or_else(|| fields.focused().map(caret_anchor));
@@ -946,7 +999,7 @@ fn resolve_deferred(
     if let Some(anchor) = menu_anchor {
         let raised = Fields::collect(ui, painter.renderer());
         if let Some(field) = raised.at(point(anchor.x, anchor.y)) {
-            crate::shell::menu::open_edit(field, anchor, crate::shell::lang::strings());
+            crate::shell::menu::open_edit(app, field, anchor, crate::shell::lang::strings());
         }
     }
 }
@@ -1258,12 +1311,11 @@ fn raise_menu(
     fields: &Fields,
     p: LogicalPoint,
     queued: &mut Vec<Apply>,
-    restricted: bool,
-    actions: crate::shell::ApplicationActions,
+    app: &App,
 ) -> Option<LogicalPoint> {
     let at = point(p.x, p.y);
     let Some(field) = fields.at(at) else {
-        (actions.open_menu)(p, restricted);
+        app.open_context_menu(app.new_menu(p));
         return None;
     };
     let lease = jfn_platform_abi::try_lease()?;

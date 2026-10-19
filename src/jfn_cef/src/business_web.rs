@@ -48,7 +48,7 @@ struct MediaMetadata {
 static WAS_FULLSCREEN_BEFORE_OSD: Mutex<bool> = Mutex::new(false);
 
 /// Install jellyfin-web's handlers before its client is submitted to CEF.
-pub(crate) fn install(client: &Arc<Inner>, application_menu: crate::ApplicationMenu) {
+pub(crate) fn install(client: &Arc<Inner>) {
     client.set_created_callback(Some(Arc::new(|| {
         // The router owns this browser's CEF focus: it is live here, and a
         // focus published before it existed reached nothing.
@@ -56,11 +56,6 @@ pub(crate) fn install(client: &Arc<Inner>, application_menu: crate::ApplicationM
     })));
 
     client.set_message_handler(Some(Box::new(handle_message)));
-
-    client.set_context_menu_builder(Some(crate::app_menu::build_closure(application_menu.items)));
-    client.set_context_menu_dispatcher(Some(crate::app_menu::dispatch_closure(
-        application_menu.on_selected,
-    )));
 }
 
 fn parse_metadata_json(json: &str) -> MediaMetadata {

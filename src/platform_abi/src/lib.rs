@@ -16,9 +16,11 @@ use std::ffi::{c_int, c_void};
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
+pub mod app;
 pub mod blocking;
 pub use blocking::BlockingError;
 pub mod cef_host;
+pub mod context_menu;
 pub mod geometry;
 pub mod instance;
 pub mod media_sink;
@@ -39,7 +41,9 @@ pub mod visibility;
 pub mod window_owner;
 pub mod window_source;
 
+pub use app::{App, AppMsg, MenuSerial};
 pub use cef_host::CefHost;
+pub use context_menu::{ChannelValue, Item, MenuBuilder};
 pub use geometry::{
     BootGeometry, COVERED_SCALES, LogicalPoint, LogicalSize, PhysicalPoint, PhysicalSize, Scale,
     SurfaceSize, WindowExtent, WindowGeometry, WindowPos,
@@ -49,9 +53,8 @@ pub use jfn_gpu_paint::DamageRect as JfnRect;
 pub use jfn_gpu_paint::WindowTarget;
 pub use media_sink::MediaSink;
 pub use menu::{
-    Generation, MENU_DISMISSED, MenuClose, MenuDelivery, MenuHost, MenuItem, MenuKind, MenuMetrics,
-    MenuPaint, MenuPlacement, MenuRequest, MenuScript, MenuSelection, PopupSurface,
-    menu_has_selectable, menu_initial_row, menu_scripts,
+    Generation, MENU_DISMISSED, MenuClose, MenuDelivery, MenuHost, MenuKind, MenuMetrics,
+    MenuPaint, MenuPlacement, MenuRequest, MenuScript, PopupSurface, menu_scripts,
 };
 pub use mpv_host::{DefaultMpvHost, MpvHost, VoWait};
 pub use osr_popup::{NoOsrPopup, OsrPopupSurface};

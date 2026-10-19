@@ -1,26 +1,10 @@
-use cef::rc::Rc;
 use cef::*;
-use std::os::raw::{c_int, c_void};
+use std::os::raw::c_int;
 use std::sync::Arc;
 
-use crate::cef_string::userfree_to_string;
+use jfn_platform_abi::LogicalPoint;
+
 use crate::client::Inner;
-use crate::platform_ops::{MENU_DISMISSED, MenuDelivery, MenuItem, MenuKind, MenuRequest};
-
-const STRIP_ACCEL_KEEP: u8 = b'&';
-
-fn strip_accelerator(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for b in s.bytes() {
-        if b != STRIP_ACCEL_KEEP {
-            out.push(b as char);
-        }
-    }
-    if s.is_ascii() {
-        return out;
-    }
-    s.chars().filter(|c| *c != '&').collect()
-}
 
 wrap_context_menu_handler! {
     pub struct JfnContextMenuHandlerBuilder {
@@ -54,13 +38,6 @@ wrap_context_menu_handler! {
                     break;
                 }
             }
-            if self.inner.has_context_menu_builder() {
-                m.add_separator();
-                // C++ thunk uses CefMenuModelCToCpp::Wrap which adopts one ref.
-                unsafe { Rc::add_ref(m) };
-                let raw = ImplMenuModel::get_raw(m) as *mut c_void;
-                self.inner.invoke_context_menu_builder(raw);
-            }
         }
         fn run_context_menu(
             &self,
@@ -75,54 +52,19 @@ wrap_context_menu_handler! {
             else {
                 return 0;
             };
-            if model.count() == 0 {
-                callback.cancel();
-                return 1;
-            }
-            let MenuDelivery::Host(host) =
-                self.inner.surface().platform().menu_delivery(MenuKind::ContextMenu)
-            else {
-                callback.cancel();
-                return 1;
-            };
-            let Some(session) = self.inner.menu_open() else {
-                callback.cancel();
-                return 1;
-            };
-            self.inner.store_pending_menu_callback(callback.clone());
-
-            let mut items = Vec::with_capacity(model.count());
-            for i in 0..model.count() {
-                let t: sys::cef_menu_item_type_t = model.type_at(i).into();
-                if t == sys::cef_menu_item_type_t::MENUITEMTYPE_SEPARATOR {
-                    items.push(MenuItem {
-                        id: 0,
-                        label: String::new(),
-                        enabled: false,
-                        separator: true,
-                    });
-                } else {
-                    let raw_label = userfree_to_string(&model.label_at(i));
-                    items.push(MenuItem {
-                        id: model.command_id_at(i),
-                        label: strip_accelerator(&raw_label),
-                        enabled: model.is_enabled_at(i) != 0,
-                        separator: false,
-                    });
-                }
-            }
-
-            host.open(MenuRequest {
-                items,
+            let anchor = LogicalPoint {
                 x: params.xcoord(),
                 // The anchor is in the web overlay's own view space; the app menu
                 // is placed in window space, so the strip the overlay was sized
                 // below is added back.
                 y: params.ycoord() + self.inner.view_top(),
-                width: 0,
-                initial: MENU_DISMISSED,
-                on_selected: self.inner.menu_selection_callback(session),
-            });
+            };
+            self.inner.menu.lock().open_context_menu(
+                callback.clone(),
+                model,
+                anchor,
+                self.inner.channel.sender(),
+            );
             1
         }
     }
