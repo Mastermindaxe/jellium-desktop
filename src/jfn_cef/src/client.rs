@@ -22,11 +22,11 @@ use std::sync::{Arc, OnceLock};
 use std::time::Instant;
 
 use crate::ipc::BrowserMessage;
-use jfn_platform_abi::{ChannelValue, Item, LogicalPoint, MenuBuilder, MenuSerial};
+use jfn_platform_abi::{ChannelValue, LogicalPoint, MenuBuilder, MenuSerial};
 
-use crate::cef_string::userfree_to_string;
 use crate::receiver::CefMsg;
 use crate::web_overlay::WebOverlaySurface;
+use jfn_platform_abi::lang::ContextMenuLabel;
 
 use crate::frame_rate::FrameRate;
 use crate::paint_scheduler::{PaintMode, PaintScheduler};
@@ -249,19 +249,28 @@ pub(crate) struct Inner {
     pub(crate) menu: Mutex<Menu>,
 }
 
-const STRIP_ACCEL_KEEP: u8 = b'&';
-
-fn strip_accelerator(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for b in s.bytes() {
-        if b != STRIP_ACCEL_KEEP {
-            out.push(b as char);
-        }
+fn menu_label(command_id: c_int) -> Option<ContextMenuLabel> {
+    const BACK: c_int = sys::cef_menu_id_t::MENU_ID_BACK as c_int;
+    const FORWARD: c_int = sys::cef_menu_id_t::MENU_ID_FORWARD as c_int;
+    const RELOAD: c_int = sys::cef_menu_id_t::MENU_ID_RELOAD as c_int;
+    const UNDO: c_int = sys::cef_menu_id_t::MENU_ID_UNDO as c_int;
+    const REDO: c_int = sys::cef_menu_id_t::MENU_ID_REDO as c_int;
+    const CUT: c_int = sys::cef_menu_id_t::MENU_ID_CUT as c_int;
+    const COPY: c_int = sys::cef_menu_id_t::MENU_ID_COPY as c_int;
+    const PASTE: c_int = sys::cef_menu_id_t::MENU_ID_PASTE as c_int;
+    const SELECT_ALL: c_int = sys::cef_menu_id_t::MENU_ID_SELECT_ALL as c_int;
+    match command_id {
+        BACK => Some(ContextMenuLabel::Back),
+        FORWARD => Some(ContextMenuLabel::Forward),
+        RELOAD => Some(ContextMenuLabel::Reload),
+        UNDO => Some(ContextMenuLabel::Undo),
+        REDO => Some(ContextMenuLabel::Redo),
+        CUT => Some(ContextMenuLabel::Cut),
+        COPY => Some(ContextMenuLabel::Copy),
+        PASTE => Some(ContextMenuLabel::Paste),
+        SELECT_ALL => Some(ContextMenuLabel::SelectAll),
+        _ => None,
     }
-    if s.is_ascii() {
-        return out;
-    }
-    s.chars().filter(|c| *c != '&').collect()
 }
 
 pub(crate) struct Menu {
@@ -277,30 +286,27 @@ impl Menu {
         anchor: LogicalPoint,
         sender: std::sync::mpsc::Sender<CefMsg>,
     ) {
-        let mut builder = self.app.new_menu(anchor);
+        let mut builder = self.app.new_context_menu(anchor);
         let serial = builder.serial();
-        let mut run = Vec::new();
         for i in 0..model.count() {
-            let t: sys::cef_menu_item_type_t = model.type_at(i).into();
-            if t == sys::cef_menu_item_type_t::MENUITEMTYPE_SEPARATOR {
-                builder = builder.add_items(std::mem::take(&mut run));
-                continue;
-            }
-            let cb = callback.clone();
             let command_id = model.command_id_at(i);
-            run.push(Item {
-                label: strip_accelerator(&userfree_to_string(&model.label_at(i))),
-                enabled: model.is_enabled_at(i) != 0,
-                value: ChannelValue::new(
+            let Some(label) = menu_label(command_id) else {
+                continue;
+            };
+            let cb = callback.clone();
+            builder = builder.add(
+                label,
+                model.is_enabled_at(i) != 0,
+                ChannelValue::new(
                     sender.clone(),
                     CefMsg::Menu {
                         serial,
                         callback: Box::new(move || cb.cont(command_id, EventFlags::default())),
                     },
                 ),
-            });
+            );
         }
-        let builder = builder.add_items(run).add_on_closed(ChannelValue::new(
+        let builder = builder.add_on_closed(ChannelValue::new(
             sender,
             CefMsg::Menu {
                 serial,

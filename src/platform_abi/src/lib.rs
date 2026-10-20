@@ -23,6 +23,7 @@ pub mod cef_host;
 pub mod context_menu;
 pub mod geometry;
 pub mod instance;
+pub mod lang;
 pub mod media_sink;
 pub mod menu;
 pub mod mpv_host;
@@ -43,7 +44,7 @@ pub mod window_source;
 
 pub use app::{App, AppMsg, MenuSerial};
 pub use cef_host::CefHost;
-pub use context_menu::{ChannelValue, Item, MenuBuilder};
+pub use context_menu::{ChannelValue, ContextMenuBuilder, Item, MenuBuilder};
 pub use geometry::{
     BootGeometry, COVERED_SCALES, LogicalPoint, LogicalSize, PhysicalPoint, PhysicalSize, Scale,
     SurfaceSize, WindowExtent, WindowGeometry, WindowPos,

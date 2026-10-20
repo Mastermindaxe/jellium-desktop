@@ -1,5 +1,6 @@
 use crate::LogicalPoint;
-use crate::context_menu::MenuBuilder;
+use crate::context_menu::{ContextMenuBuilder, MenuBuilder};
+use crate::lang::LanguageLoader;
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 pub struct MenuSerial(usize);
@@ -11,7 +12,7 @@ impl MenuSerial {
 }
 
 pub enum AppMsg {
-    OpenContextMenu(MenuSerial, MenuBuilder),
+    OpenContextMenu(MenuSerial, ContextMenuBuilder),
     OpenDropdown(MenuSerial, MenuBuilder),
     CloseMenu(MenuSerial),
     OpenClientSettings,
@@ -21,17 +22,24 @@ pub enum AppMsg {
 pub struct App {
     channel: Box<dyn Fn(AppMsg) + Send + Sync>,
     next_serial: Box<dyn Fn() -> MenuSerial + Send + Sync>,
+    locale: LanguageLoader,
 }
 
 impl App {
     pub fn new<T: From<AppMsg> + Send + 'static>(
         channel: std::sync::mpsc::Sender<T>,
         next_serial: impl Fn() -> MenuSerial + Send + Sync + 'static,
+        locale: LanguageLoader,
     ) -> App {
         App {
             channel: Box::new(move |msg| drop(channel.send(T::from(msg)))),
             next_serial: Box::new(next_serial),
+            locale,
         }
+    }
+
+    pub fn locale(&self) -> &LanguageLoader {
+        &self.locale
     }
 
     pub fn new_menu(&self, anchor: LogicalPoint) -> MenuBuilder {
@@ -45,8 +53,12 @@ impl App {
         }
     }
 
-    pub fn open_context_menu(&self, builder: MenuBuilder) {
-        (self.channel)(AppMsg::OpenContextMenu(builder.serial, builder));
+    pub fn new_context_menu(&self, anchor: LogicalPoint) -> ContextMenuBuilder {
+        ContextMenuBuilder::new(self.new_menu(anchor), self.locale.clone())
+    }
+
+    pub fn open_context_menu(&self, builder: ContextMenuBuilder) {
+        (self.channel)(AppMsg::OpenContextMenu(builder.serial(), builder));
     }
 
     pub fn open_dropdown(&self, builder: MenuBuilder) {

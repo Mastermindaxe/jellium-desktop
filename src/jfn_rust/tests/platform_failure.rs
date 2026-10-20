@@ -12,6 +12,7 @@ fn failed_backend_returns_its_cleanup_owner() -> Result<(), Box<dyn std::error::
         std::sync::Arc::new(jfn_platform_abi::App::new(
             std::sync::mpsc::channel::<jfn_platform_abi::AppMsg>().0,
             || jfn_platform_abi::MenuSerial::new(0),
+            jfn_platform_abi::lang::detect()?,
         )),
     ) {
         Ok(runtime) => {

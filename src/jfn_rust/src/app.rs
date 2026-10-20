@@ -351,6 +351,7 @@ fn initialize_cef(
     runtime: BrowserCef,
     platform: &jfn_platform_abi::PlatformRuntime,
     opts: &StartupOptions,
+    app: &App,
 ) -> Result<CefInit, jfn_cef::InitError> {
     let shared_textures = plat().shared_texture_supported() && !opts.disable_gpu_compositing;
     tracing::info!(target: "Main", "[FLOW] calling CefInitialize...");
@@ -361,6 +362,7 @@ fn initialize_cef(
             log_severity: cef_severity_for_cef_filter(),
             remote_debugging_port: opts.remote_debugging_port,
             disable_gpu_compositing: !shared_textures,
+            locale: app.locale().language().to_string(),
         },
     )?;
     tracing::info!(target: "Main",
@@ -905,6 +907,13 @@ pub fn jfn_app_main() -> c_int {
     let opts = resolve_startup_options(&cli);
 
     init_logging(opts.log_file.as_deref(), &opts.log_level, &version);
+    let locale = match jfn_platform_abi::lang::detect() {
+        Ok(locale) => locale,
+        Err(error) => {
+            tracing::error!(target: "Main", "{error}");
+            return 1;
+        }
+    };
     let metadata = match application_metadata(version) {
         Ok(metadata) => metadata,
         Err(error) => {
@@ -940,7 +949,7 @@ pub fn jfn_app_main() -> c_int {
         &instance,
         jfn_instance_ipc::jfn::handle,
     )) {
-        Start::Started(_listener) => run_app(&instance, opts, cef_runtime, metadata),
+        Start::Started(_listener) => run_app(&instance, opts, cef_runtime, metadata, locale),
         Start::AlreadyRunning => runtime.block_on(notify_running(&instance)),
         Start::Failed(e) => {
             tracing::error!(target: "Main", "could not start instance IPC: {e}");
@@ -969,6 +978,7 @@ fn run_app(
     opts: StartupOptions,
     runtime: BrowserCef,
     metadata: ApplicationMetadata,
+    locale: jfn_platform_abi::lang::LanguageLoader,
 ) -> c_int {
     let prepared = match jfn_platform_abi::PreparedPlatform::claim(plat()) {
         Ok(prepared) => prepared,
@@ -1050,10 +1060,14 @@ fn run_app(
     let boot = BackgroundCapture::Pending;
 
     let menu = Arc::new(crate::app_menu::MenuManager::new());
-    let app = Arc::new(App::new(crate::shell::shell_sender(), {
-        let menu = Arc::clone(&menu);
-        move || menu.next_serial()
-    }));
+    let app = Arc::new(App::new(
+        crate::shell::shell_sender(),
+        {
+            let menu = Arc::clone(&menu);
+            move || menu.next_serial()
+        },
+        locale,
+    ));
     // Platform init precedes both the shell overlay and `CefInitialize`: the
     // overlay's surface needs the backend's compositor devices, and the
     // connect screen must be on screen while CEF is still starting.
@@ -1090,7 +1104,7 @@ fn run_app(
     // allows it, it runs while the core thread builds the VO and its GPU
     // context instead of after.
     let deferred = if plat().cef_init_precedes_mpv_window() {
-        match initialize_cef(runtime, platform, &opts) {
+        match initialize_cef(runtime, platform, &opts, &app) {
             Ok(cef) => {
                 resources.services.cef = Some(cef);
                 None
@@ -1283,7 +1297,7 @@ fn run_with_cef(
     publish_device_profile(mpv_raw);
     if let Some(runtime) = deferred {
         let platform = &resources.native.get().platform;
-        match initialize_cef(runtime, platform, opts) {
+        match initialize_cef(runtime, platform, opts, &app) {
             Ok(cef) => resources.services.cef = Some(cef),
             Err(error) => {
                 tracing::error!(target: "Main", "{error}");

@@ -16,7 +16,6 @@ pub mod field;
 pub mod fields;
 mod fonts;
 pub mod key;
-pub mod lang;
 pub mod logo;
 pub mod menu;
 pub mod metadata;

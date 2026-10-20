@@ -14,9 +14,10 @@ use iced_core::widget::{Id, Operation as _};
 use iced_core::{Element, Event, Point, Size, clipboard, renderer, shell, window};
 use iced_runtime::user_interface::{self, UserInterface};
 use jfn_gpu_paint::{Acquired, Presented};
+use jfn_platform_abi::lang::ContextMenuLabel;
 use jfn_platform_abi::{
-    App, AppMsg, ChannelValue, FrameSource, LogicalPoint, LogicalSize, MenuBuilder, MenuSerial,
-    SurfaceHandle, Visibility, WindowExtent,
+    App, AppMsg, ChannelValue, ContextMenuBuilder, FrameSource, LogicalPoint, LogicalSize,
+    MenuBuilder, MenuSerial, SurfaceHandle, Visibility, WindowExtent,
 };
 
 use crate::shell::controls::{self, Direction};
@@ -65,7 +66,7 @@ pub enum Work {
     /// CEF is initialized; pending connection operations can now be submitted.
     WebAttached(jfn_cef::WebOverlay),
     WebEvent(jfn_cef::WebEvent),
-    OpenContextMenu(MenuSerial, MenuBuilder),
+    OpenContextMenu(MenuSerial, ContextMenuBuilder),
     OpenDropdown(MenuSerial, MenuBuilder),
     CloseMenu(MenuSerial),
     ToggleFullscreen,
@@ -346,9 +347,12 @@ impl Model {
     }
 
     /// The modal stack's own view, then the titlebar, then nothing.
-    fn view(&self) -> Element<'_, Message, Theme, iced_wgpu::Renderer> {
+    fn view(&self, app: &App) -> Element<'_, Message, Theme, iced_wgpu::Renderer> {
         if self.stack.occupied() {
-            return self.stack.view(&self.screen).map(Message::Modal);
+            return self
+                .stack
+                .view(&self.screen, app.locale())
+                .map(Message::Modal);
         }
         if self.titlebar_shown() {
             return self.titlebar.view().map(Message::Chrome);
@@ -794,28 +798,29 @@ impl Loop {
             }
             Work::OpenContextMenu(serial, builder) => {
                 let restricted = self.model.stack.identity() == Some(Identity::SettingsOverlay);
-                let mut items = vec![jfn_platform_abi::Item {
-                    label: "Toggle Fullscreen".to_owned(),
-                    enabled: true,
-                    value: ChannelValue::new(self.wake_tx.clone(), Work::ToggleFullscreen),
-                }];
+                let mut builder = builder.add(
+                    ContextMenuLabel::Fullscreen,
+                    true,
+                    ChannelValue::new(self.wake_tx.clone(), Work::ToggleFullscreen),
+                );
                 if !restricted {
-                    items.push(jfn_platform_abi::Item {
-                        label: "Settings".to_owned(),
-                        enabled: true,
-                        value: ChannelValue::new(self.wake_tx.clone(), Work::OpenClientSettings),
-                    });
+                    builder = builder.add(
+                        ContextMenuLabel::Settings,
+                        true,
+                        ChannelValue::new(self.wake_tx.clone(), Work::OpenClientSettings),
+                    );
                 }
-                items.push(jfn_platform_abi::Item {
-                    label: "Exit".to_owned(),
-                    enabled: true,
-                    value: ChannelValue::new(self.wake_tx.clone(), Work::Exit),
-                });
-                let builder = builder.add_items(items).add_on_closed(ChannelValue::new(
-                    self.wake_tx.clone(),
-                    Work::CloseMenu(serial),
-                ));
-                self.menu.open(serial, builder);
+                let builder = builder
+                    .add(
+                        ContextMenuLabel::Exit,
+                        true,
+                        ChannelValue::new(self.wake_tx.clone(), Work::Exit),
+                    )
+                    .add_on_closed(ChannelValue::new(
+                        self.wake_tx.clone(),
+                        Work::CloseMenu(serial),
+                    ));
+                self.menu.open(serial, builder.into());
             }
             Work::OpenDropdown(serial, builder) => self.menu.open(
                 serial,
@@ -862,7 +867,7 @@ impl Loop {
         let model = &this.model;
         let painter = &mut this.painter;
         let mut ui = UserInterface::build(
-            model.view(),
+            model.view(&this.app),
             Size::new(
                 this.current.logical().w as f32,
                 this.current.logical().h as f32,
@@ -1001,7 +1006,7 @@ fn resolve_deferred(
     if let Some(anchor) = menu_anchor {
         let raised = Fields::collect(ui, painter.renderer());
         if let Some(field) = raised.at(point(anchor.x, anchor.y)) {
-            crate::shell::menu::open_edit(app, field, anchor, crate::shell::lang::strings());
+            crate::shell::menu::open_edit(app, field, anchor);
         }
     }
 }
@@ -1317,7 +1322,7 @@ fn raise_menu(
 ) -> Option<LogicalPoint> {
     let at = point(p.x, p.y);
     let Some(field) = fields.at(at) else {
-        app.open_context_menu(app.new_menu(p));
+        app.open_context_menu(app.new_context_menu(p));
         return None;
     };
     let lease = jfn_platform_abi::try_lease()?;

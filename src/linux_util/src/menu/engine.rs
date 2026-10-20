@@ -960,7 +960,11 @@ mod tests {
     fn request_row(items: Vec<Item>, initial: Option<usize>) -> (MenuRequest, Receiver<c_int>) {
         let (tx, rx): (Sender<c_int>, Receiver<c_int>) = channel();
         let (app_tx, _app_rx) = channel::<jfn_platform_abi::AppMsg>();
-        let app = jfn_platform_abi::App::new(app_tx, || jfn_platform_abi::MenuSerial::new(0));
+        let app = jfn_platform_abi::App::new(
+            app_tx,
+            || jfn_platform_abi::MenuSerial::new(0),
+            jfn_platform_abi::lang::detect().unwrap(),
+        );
         let builder = app
             .new_menu(LogicalPoint { x: 0, y: 0 })
             .add_items(items)

@@ -1,10 +1,10 @@
 //! The edit menu, raised through the platform's own menu host.
 
+use jfn_platform_abi::lang::ContextMenuLabel;
 use jfn_platform_abi::{App, ChannelValue, LogicalPoint};
 
 use crate::shell::actor::{Target, Work};
 use crate::shell::fields::Snapshot;
-use crate::shell::lang::Strings;
 
 /// The edit menu's items, in order.
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
@@ -39,14 +39,14 @@ impl Item {
         }
     }
 
-    pub fn label(self, strings: &Strings) -> &'static str {
+    pub fn label(self) -> ContextMenuLabel {
         match self {
-            Item::Undo => strings.undo,
-            Item::Redo => strings.redo,
-            Item::Cut => strings.cut,
-            Item::Copy => strings.copy,
-            Item::Paste => strings.paste,
-            Item::SelectAll => strings.select_all,
+            Item::Undo => ContextMenuLabel::Undo,
+            Item::Redo => ContextMenuLabel::Redo,
+            Item::Cut => ContextMenuLabel::Cut,
+            Item::Copy => ContextMenuLabel::Copy,
+            Item::Paste => ContextMenuLabel::Paste,
+            Item::SelectAll => ContextMenuLabel::SelectAll,
         }
     }
 
@@ -67,25 +67,22 @@ impl Item {
 /// Raises the edit menu for `field` at `anchor`, in window coordinates. A
 /// selection posts [`crate::shell::actor::Work::EditAt`] naming `field`; a dismissal
 /// posts nothing. No accelerator text is drawn.
-pub fn open_edit(app: &App, field: &Snapshot, anchor: LogicalPoint, strings: &Strings) {
+pub fn open_edit(app: &App, field: &Snapshot, anchor: LogicalPoint) {
     let sender = crate::shell::shell_sender();
-    let items = Item::ALL
+    let builder = Item::ALL
         .into_iter()
-        .map(|item| {
-            let id = field.id.clone();
-            let command = item.command();
-            jfn_platform_abi::Item {
-                label: item.label(strings).to_owned(),
-                enabled: item.enabled(field),
-                value: ChannelValue::new(
+        .fold(app.new_context_menu(anchor), |builder, item| {
+            builder.add(
+                item.label(),
+                item.enabled(field),
+                ChannelValue::new(
                     sender.clone(),
                     Work::EditAt {
-                        field: Target::Named(id),
-                        command,
+                        field: Target::Named(field.id.clone()),
+                        command: item.command(),
                     },
                 ),
-            }
-        })
-        .collect();
-    app.open_context_menu(app.new_menu(anchor).add_items(items));
+            )
+        });
+    app.open_context_menu(builder);
 }

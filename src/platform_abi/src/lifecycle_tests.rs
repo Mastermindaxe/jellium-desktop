@@ -3,9 +3,11 @@
 use super::*;
 
 fn app() -> std::sync::Arc<App> {
-    std::sync::Arc::new(App::new(std::sync::mpsc::channel::<AppMsg>().0, || {
-        MenuSerial::new(0)
-    }))
+    std::sync::Arc::new(App::new(
+        std::sync::mpsc::channel::<AppMsg>().0,
+        || MenuSerial::new(0),
+        crate::lang::detect().unwrap(),
+    ))
 }
 
 #[derive(Clone, Copy)]
