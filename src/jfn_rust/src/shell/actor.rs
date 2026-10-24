@@ -1075,24 +1075,23 @@ fn paint(
 ) -> Painted {
     // Clear before the platform hides the surface. On Wayland the surface
     // stays mapped, so this transparent frame is what removes the overlay;
-    // committing it raw would race wgpu's explicit-sync points.
+    // committing it raw would race wgpu's explicit-sync points. Keep the
+    // overlay marked shown until the clear actually lands: a deferred acquire
+    // during fullscreen would otherwise leave the old titlebar on screen.
     if !model.visibility().is_shown() && painter.shown() {
-        if let Acquired::Frame(frame) = painter.acquire() {
-            let _cleared = painter.clear(frame);
+        match painter.acquire() {
+            Acquired::Deferred(deferred) => return deferred_paint(deferred, redraw),
+            Acquired::Frame(frame) => {
+                let _cleared = painter.clear(frame);
+                painter.mark_hidden();
+            }
         }
-        painter.mark_hidden();
     }
 
     match apply_visibility(surface, model) {
         Visibility::Hidden => Painted::Hidden,
         Visibility::Shown => match painter.acquire() {
-            Acquired::Deferred(deferred) => match deferred.retry_at() {
-                Some(at) => Painted::Deferred(at),
-                None => {
-                    redraw.request_frame();
-                    Painted::Requested
-                }
-            },
+            Acquired::Deferred(deferred) => deferred_paint(deferred, redraw),
             Acquired::Frame(frame) => {
                 ui.draw(
                     painter.renderer(),
@@ -1104,6 +1103,16 @@ fn paint(
                 Painted::Shown(painter.present(frame))
             }
         },
+    }
+}
+
+fn deferred_paint(deferred: jfn_gpu_paint::Deferred, redraw: &Redraw) -> Painted {
+    match deferred.retry_at() {
+        Some(at) => Painted::Deferred(at),
+        None => {
+            redraw.request_frame();
+            Painted::Requested
+        }
     }
 }
 
