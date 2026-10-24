@@ -16,6 +16,10 @@ pub struct Painter {
     swapchain: Swapchain<'static>,
     renderer: Renderer,
     viewport: Viewport,
+    /// Whether the last presented frame was the visible overlay rather than a
+    /// clear frame. A transition to hidden presents one transparent frame
+    /// before the platform hides the surface.
+    shown: bool,
 }
 
 struct Waker(Arc<dyn Fn() + Send + Sync>);
@@ -62,6 +66,7 @@ impl Painter {
             swapchain,
             renderer,
             viewport: viewport(extent),
+            shown: false,
         })
     }
 
@@ -79,6 +84,26 @@ impl Painter {
         &self.viewport
     }
 
+    pub fn shown(&self) -> bool {
+        self.shown
+    }
+
+    pub fn mark_shown(&mut self) {
+        self.shown = true;
+    }
+
+    pub fn mark_hidden(&mut self) {
+        self.shown = false;
+    }
+
+    /// Presents a fully transparent frame, clearing whatever the overlay last
+    /// drew. Used on the shown-to-hidden transition: Wayland keeps the surface
+    /// mapped (raw commits would race wgpu's explicit-sync points), so the
+    /// cleared frame is what hides the overlay.
+    pub fn clear(&mut self, frame: jfn_gpu_paint::Frame<'static>) -> Presented {
+        self.present_frame(frame)
+    }
+
     /// Acquires one frame with no gate held. A stale or occluded swapchain
     /// hands back the retry it owes instead.
     pub fn acquire(&mut self) -> jfn_gpu_paint::Acquired<'static> {
@@ -91,6 +116,10 @@ impl Painter {
     /// The frame is always cleared fully transparent; opacity is a widget's to
     /// draw.
     pub fn present(&mut self, frame: jfn_gpu_paint::Frame<'static>) -> Presented {
+        self.present_frame(frame)
+    }
+
+    fn present_frame(&mut self, frame: jfn_gpu_paint::Frame<'static>) -> Presented {
         let format = self.swapchain.format();
         let renderer = &mut self.renderer;
         let viewport = &self.viewport;

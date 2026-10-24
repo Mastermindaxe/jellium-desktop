@@ -20,10 +20,10 @@ pub enum WindowTarget {
         visual: u32,
     },
     /// Wayland — `display` is `wl_display*`, `surface` is `wl_surface*`. The
-    /// swapchain owns every buffer this surface carries: no other client code
-    /// attaches one. The surface's owner still commits it with no buffer to
-    /// empty it, and blocks on that commit's acknowledgement before returning,
-    /// so such a commit never interleaves with a present.
+    /// swapchain owns every buffer and every commit for this surface: no other
+    /// client code attaches a buffer or commits it. A hidden surface is cleared
+    /// by presenting a transparent frame, because a bare commit can interleave
+    /// with the WSI's explicit-sync points.
     Wayland {
         display: NonNull<c_void>,
         surface: NonNull<c_void>,

@@ -269,8 +269,9 @@ pub(crate) struct PlatformSurface {
     /// actor mirrors it only as the request it has yet to commit.
     pub visibility: Visibility,
     pub layer_actor: Option<LayerActor>,
-    /// Set by `Platform::surface_window_target`. The actor attaches no buffer
-    /// and drops every present for a surface with this set.
+    /// Set by `Platform::surface_window_target`. The actor attaches no buffer,
+    /// drops every present, and makes no raw commit for a surface with this
+    /// set: the owner's wgpu swapchain owns its commit stream.
     pub external: bool,
     pub top_logical: i32,
     pub top_physical: i32,

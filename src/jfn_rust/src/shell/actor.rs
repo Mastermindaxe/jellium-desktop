@@ -1073,6 +1073,16 @@ fn paint(
     cursor: Cursor,
     redraw: &Redraw,
 ) -> Painted {
+    // Clear before the platform hides the surface. On Wayland the surface
+    // stays mapped, so this transparent frame is what removes the overlay;
+    // committing it raw would race wgpu's explicit-sync points.
+    if !model.visibility().is_shown() && painter.shown() {
+        if let Acquired::Frame(frame) = painter.acquire() {
+            let _cleared = painter.clear(frame);
+        }
+        painter.mark_hidden();
+    }
+
     match apply_visibility(surface, model) {
         Visibility::Hidden => Painted::Hidden,
         Visibility::Shown => match painter.acquire() {
@@ -1090,6 +1100,7 @@ fn paint(
                     &renderer::Style::default(),
                     cursor,
                 );
+                painter.mark_shown();
                 Painted::Shown(painter.present(frame))
             }
         },

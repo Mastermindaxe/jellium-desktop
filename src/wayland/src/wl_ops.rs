@@ -154,6 +154,13 @@ pub(crate) fn set_visibility(
     };
     let s = unsafe { surface_mut(ptr) };
     s.visibility = visibility;
+    // An external surface is presented by its owner (the shell), whose wgpu
+    // swapchain owns the surface's commit stream. A raw commit here would race
+    // the Wayland WSI's explicit-sync points. The owner hides by presenting a
+    // transparent frame before asking; the platform-level bit is just state.
+    if s.external {
+        return VisibilityCommit::issued(visibility, Ack::immediate());
+    }
     let Some(actor) = s.layer_actor.as_ref() else {
         return VisibilityCommit::issued(visibility, Ack::immediate());
     };
@@ -191,7 +198,11 @@ pub(crate) fn surface_resize(
     if let Some(surface) = s.surface.as_ref() {
         surface.set_destination(logical.w, logical.h);
     }
-    if let Some(actor) = s.layer_actor.as_ref() {
+    // The external owner resizes its own wgpu swapchain; a layer-actor
+    // viewport reapply would bare-commit that wgpu-owned surface.
+    if !s.external
+        && let Some(actor) = s.layer_actor.as_ref()
+    {
         actor.resize(logical.w, logical.h, physical.w, physical.h);
     }
     st.flush();
