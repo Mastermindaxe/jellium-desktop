@@ -10,16 +10,19 @@ use iced_core::{Color, Size};
 use iced_wgpu::graphics::{Antialiasing, Shell, Viewport};
 use iced_wgpu::{Engine, Renderer};
 use jfn_gpu_paint::{FrameSize, Presented, SurfaceLost, Surfaces, Swapchain, WindowTarget};
-use jfn_platform_abi::WindowExtent;
+use jfn_platform_abi::{Visibility, WindowExtent};
 
 pub struct Painter {
-    swapchain: Swapchain<'static>,
+    gpu: &'static Surfaces,
+    target: WindowTarget,
+    extent: WindowExtent,
+    /// Dropped while the overlay is hidden: the platform hides the surface with
+    /// a bare commit, which must not race the WSI's explicit-sync points. The
+    /// next shown frame rebuilds it.
+    swapchain: Option<Swapchain<'static>>,
     renderer: Renderer,
     viewport: Viewport,
-    /// Whether the last presented frame was the visible overlay rather than a
-    /// clear frame. A transition to hidden presents one transparent frame
-    /// before the platform hides the surface.
-    shown: bool,
+    visibility: Visibility,
 }
 
 struct Waker(Arc<dyn Fn() + Send + Sync>);
@@ -63,15 +66,21 @@ impl Painter {
         );
         hint_scale(&mut renderer, extent);
         Ok(Painter {
-            swapchain,
+            gpu,
+            target,
+            extent,
+            swapchain: Some(swapchain),
             renderer,
             viewport: viewport(extent),
-            shown: false,
+            visibility: Visibility::Hidden,
         })
     }
 
     pub fn resize(&mut self, extent: WindowExtent) {
-        self.swapchain.resize(frame_size(extent));
+        self.extent = extent;
+        if let Some(swapchain) = self.swapchain.as_mut() {
+            swapchain.resize(frame_size(extent));
+        }
         self.viewport = viewport(extent);
         hint_scale(&mut self.renderer, extent);
     }
@@ -84,30 +93,41 @@ impl Painter {
         &self.viewport
     }
 
-    pub fn shown(&self) -> bool {
-        self.shown
+    pub fn visibility(&self) -> Visibility {
+        self.visibility
     }
 
-    pub fn mark_shown(&mut self) {
-        self.shown = true;
+    pub fn set_visibility(&mut self, visibility: Visibility) {
+        self.visibility = visibility;
     }
 
-    pub fn mark_hidden(&mut self) {
-        self.shown = false;
+    /// Destroys the WSI surface before a platform-level hide commits the
+    /// surface with no buffer.
+    pub fn release(&mut self) {
+        self.swapchain = None;
     }
 
-    /// Presents a fully transparent frame, clearing whatever the overlay last
-    /// drew. Used on the shown-to-hidden transition: Wayland keeps the surface
-    /// mapped (raw commits would race wgpu's explicit-sync points), so the
-    /// cleared frame is what hides the overlay.
-    pub fn clear(&mut self, frame: jfn_gpu_paint::Frame<'static>) -> Presented {
-        self.present_frame(frame)
+    fn ensure(&mut self) -> Result<(), SurfaceLost> {
+        if self.swapchain.is_none() {
+            let swapchain = self
+                .gpu
+                .new_swapchain(self.target, frame_size(self.extent))?;
+            self.swapchain = Some(swapchain);
+        }
+        Ok(())
     }
 
     /// Acquires one frame with no gate held. A stale or occluded swapchain
     /// hands back the retry it owes instead.
     pub fn acquire(&mut self) -> jfn_gpu_paint::Acquired<'static> {
-        self.swapchain.acquire()
+        if let Err(e) = self.ensure() {
+            tracing::error!(target: "Main", "shell overlay: {e}");
+            return jfn_gpu_paint::Acquired::Deferred(jfn_gpu_paint::Deferred::new());
+        }
+        match self.swapchain.as_mut() {
+            Some(swapchain) => swapchain.acquire(),
+            None => jfn_gpu_paint::Acquired::Deferred(jfn_gpu_paint::Deferred::new()),
+        }
     }
 
     /// Encodes the renderer's scene into `frame` inside the submit gate and
@@ -116,11 +136,10 @@ impl Painter {
     /// The frame is always cleared fully transparent; opacity is a widget's to
     /// draw.
     pub fn present(&mut self, frame: jfn_gpu_paint::Frame<'static>) -> Presented {
-        self.present_frame(frame)
-    }
-
-    fn present_frame(&mut self, frame: jfn_gpu_paint::Frame<'static>) -> Presented {
-        let format = self.swapchain.format();
+        let format = match self.swapchain.as_ref() {
+            Some(swapchain) => swapchain.format(),
+            None => jfn_gpu_paint::FORMAT,
+        };
         let renderer = &mut self.renderer;
         let viewport = &self.viewport;
         frame.present(|view| {
